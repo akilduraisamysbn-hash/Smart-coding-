@@ -1,0 +1,277 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <ESP32Servo.h>
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// -------- PINS --------
+#define PRESSURE_PIN 34
+
+#define PUMP_IN1 25
+#define PUMP_IN2 26
+#define PUMP_EN  27
+
+#define SERVO_PIN 18
+
+#define GREEN_LED 19
+#define RED_LED   23
+#define BUZZER    5
+
+// -------- SERVO --------
+Servo releaseValve;
+
+#define VALVE_CLOSED 0
+#define VALVE_OPEN   90
+
+// -------- PRESSURE LIMITS --------
+#define LOW_LIMIT 20.0
+#define HIGH_LIMIT 30.0
+#define CRITICAL_LIMIT 35.0
+
+// -------- SENSOR CALIBRATION --------
+// Example only.
+// Change these according to your actual sensor.
+#define SENSOR_MIN_V 0.5
+#define SENSOR_MAX_V 3.3
+#define SENSOR_MAX_PRESSURE 50.0
+
+float pressure = 0;
+
+// ------------------------------------------------
+
+void setup()
+{
+  Serial.begin(115200);
+
+  // Pins
+  pinMode(PRESSURE_PIN, INPUT);
+
+  pinMode(PUMP_IN1, OUTPUT);
+  pinMode(PUMP_IN2, OUTPUT);
+  pinMode(PUMP_EN, OUTPUT);
+
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(RED_LED, OUTPUT);
+  pinMode(BUZZER, OUTPUT);
+
+  // Pump OFF
+  pumpOFF();
+
+  // Servo
+  releaseValve.attach(SERVO_PIN);
+  releaseValve.write(VALVE_CLOSED);
+
+  // OLED
+  Wire.begin(21, 22);
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C))
+  {
+    Serial.println("OLED not found!");
+    while (1);
+  }
+
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+
+  display.setTextSize(1);
+  display.setCursor(15, 10);
+  display.println("SMART ETT CUFF");
+
+  display.setCursor(20, 30);
+  display.println("SYSTEM STARTING");
+
+  display.display();
+
+  delay(2000);
+}
+
+// ------------------------------------------------
+
+float readPressure()
+{
+  long total = 0;
+
+  // Average 10 readings
+  for (int i = 0; i < 10; i++)
+  {
+    total += analogRead(PRESSURE_PIN);
+    delay(2);
+  }
+
+  float adc = total / 10.0;
+
+  float voltage = (adc / 4095.0) * 3.3;
+
+  float p =
+    ((voltage - SENSOR_MIN_V) /
+    (SENSOR_MAX_V - SENSOR_MIN_V))
+    * SENSOR_MAX_PRESSURE;
+
+  if (p < 0)
+    p = 0;
+
+  if (p > SENSOR_MAX_PRESSURE)
+    p = SENSOR_MAX_PRESSURE;
+
+  return p;
+}
+
+// ------------------------------------------------
+
+void pumpON()
+{
+  digitalWrite(PUMP_IN1, HIGH);
+  digitalWrite(PUMP_IN2, LOW);
+  digitalWrite(PUMP_EN, HIGH);
+}
+
+// ------------------------------------------------
+
+void pumpOFF()
+{
+  digitalWrite(PUMP_IN1, LOW);
+  digitalWrite(PUMP_IN2, LOW);
+  digitalWrite(PUMP_EN, LOW);
+}
+
+// ------------------------------------------------
+
+void valveOpen()
+{
+  releaseValve.write(VALVE_OPEN);
+}
+
+// ------------------------------------------------
+
+void valveClose()
+{
+  releaseValve.write(VALVE_CLOSED);
+}
+
+// ------------------------------------------------
+
+void showDisplay(String status)
+{
+  display.clearDisplay();
+
+  display.setTextSize(1);
+  display.setCursor(10, 0);
+  display.println("SMART ETT CUFF");
+
+  display.setTextSize(2);
+  display.setCursor(5, 18);
+  display.print(pressure, 1);
+
+  display.setTextSize(1);
+  display.print(" cmH2O");
+
+  display.setCursor(5, 43);
+  display.print("STATUS: ");
+  display.println(status);
+
+  display.display();
+}
+
+// ------------------------------------------------
+
+void loop()
+{
+  pressure = readPressure();
+
+  Serial.print("Cuff Pressure: ");
+  Serial.print(pressure);
+  Serial.println(" cmH2O");
+
+  // =========================
+  // LOW PRESSURE
+  // =========================
+
+  if (pressure < LOW_LIMIT)
+  {
+    pumpON();
+    valveClose();
+
+    digitalWrite(GREEN_LED, LOW);
+    digitalWrite(RED_LED, HIGH);
+    digitalWrite(BUZZER, LOW);
+
+    showDisplay("LOW - INFLATING");
+
+    Serial.println("PUMP ON");
+  }
+
+  // =========================
+  // NORMAL PRESSURE
+  // =========================
+
+  else if (pressure >= LOW_LIMIT &&
+           pressure <= HIGH_LIMIT)
+  {
+    pumpOFF();
+    valveClose();
+
+    digitalWrite(GREEN_LED, HIGH);
+    digitalWrite(RED_LED, LOW);
+    digitalWrite(BUZZER, LOW);
+
+    showDisplay("SAFE");
+
+    Serial.println("PRESSURE NORMAL");
+  }
+
+  // =========================
+  // HIGH PRESSURE
+  // =========================
+
+  else if (pressure > HIGH_LIMIT &&
+           pressure < CRITICAL_LIMIT)
+  {
+    pumpOFF();
+
+    valveOpen();
+
+    digitalWrite(GREEN_LED, LOW);
+    digitalWrite(RED_LED, HIGH);
+
+    tone(BUZZER, 2000, 200);
+
+    showDisplay("HIGH - RELEASING");
+
+    Serial.println("RELEASE VALVE OPEN");
+
+    delay(500);
+
+    valveClose();
+  }
+
+  // =========================
+  // CRITICAL PRESSURE
+  // =========================
+
+  else
+  {
+    pumpOFF();
+    valveOpen();
+
+    digitalWrite(GREEN_LED, LOW);
+    digitalWrite(RED_LED, HIGH);
+
+    tone(BUZZER, 2500);
+
+    showDisplay("CRITICAL!");
+
+    Serial.println("CRITICAL PRESSURE!");
+
+    delay(500);
+
+    valveClose();
+
+    noTone(BUZZER);
+  }
+
+  delay(300);
+}
